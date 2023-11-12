@@ -31,7 +31,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 public final class ContainerQueryHandler extends Handler {
     private static final int NO_CONTAINER = -2;
-    private static final int OPERATION_TIMEOUT_TICKS = 60; // normal operation is ~10 ticks
+    private static final int OPERATION_TIMEOUT_TICKS = 5; // normal operation is ~10 ticks
     private static final int NEXT_OPERATION_DELAY_TICKS = 5; // normal operation is ~10 ticks
     private static final String MENU_CLICK_SOUND = "minecraft.block.wooden_pressure_plate.click_on";
 
@@ -80,7 +80,9 @@ public final class ContainerQueryHandler extends Handler {
         resetTimer();
         try {
             if (!firstStep.startStep(null)) {
-                endQuery();
+                // In theory, we have failed opening the container,
+                // so we don't need to close it
+                endQuery(false);
             }
         } catch (Throwable t) {
             raiseError("Cannot execute first step: " + t.getMessage());
@@ -90,7 +92,6 @@ public final class ContainerQueryHandler extends Handler {
     public void endAllQueries() {
         // Close current container and cancel current query
         if (containerId != NO_CONTAINER) {
-            McUtils.sendPacket(new ServerboundContainerClosePacket(containerId));
             raiseError("Container query interrupted by user");
         }
 
@@ -129,8 +130,7 @@ public final class ContainerQueryHandler extends Handler {
                 }
 
                 // We're done
-                endQuery();
-                McUtils.sendPacket(new ServerboundContainerClosePacket(containerId));
+                endQuery(true);
                 // Start next query in queue, if any
                 if (!queuedQueries.isEmpty()) {
                     runQuery(queuedQueries.pop());
@@ -170,7 +170,7 @@ public final class ContainerQueryHandler extends Handler {
         // Server closed our container window. This should not happen
         // but if it do, report failure
         if (e.getContainerId() == containerId) {
-            raiseError("Server closed container");
+            raiseError("Server closed container", false);
         } else {
             WynntilsMod.warn("Server closed container " + e.getContainerId() + " but we are querying " + containerId);
         }
@@ -288,8 +288,10 @@ public final class ContainerQueryHandler extends Handler {
             ticksUntilNextOperation = NEXT_OPERATION_DELAY_TICKS;
         } else {
             // We're done
-            endQuery();
+            // Manually close container here,
+            // we don't want to interact with the client side screens
             McUtils.sendPacket(new ServerboundContainerClosePacket(containerId));
+            endQuery(false);
             // Start next query in queue, if any
             if (!queuedQueries.isEmpty()) {
                 runQuery(queuedQueries.pop());
@@ -298,15 +300,24 @@ public final class ContainerQueryHandler extends Handler {
     }
 
     private void raiseError(String errorMsg) {
-        if (currentStep == null) {
-            WynntilsMod.error("Internal error in ContainerQueryManager: handleError called with no currentStep");
-            return;
-        }
-        currentStep.onError(errorMsg);
-        endQuery();
+        raiseError(errorMsg, true);
     }
 
-    private void endQuery() {
+    private void raiseError(String errorMsg, boolean closeContainer) {
+        if (currentStep == null) {
+            WynntilsMod.error("Internal error in ContainerQueryManager: handleError called with no currentStep");
+        } else {
+            currentStep.onError(errorMsg);
+        }
+        endQuery(closeContainer);
+    }
+
+    private void endQuery(boolean closeContainer) {
+        if (closeContainer) {
+            McUtils.sendPacket(new ServerboundContainerClosePacket(containerId));
+            McUtils.player().clientSideCloseContainer();
+        }
+
         containerId = NO_CONTAINER;
         lastHandledContentId = NO_CONTAINER;
         lastHandledItems = List.of();
